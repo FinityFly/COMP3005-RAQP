@@ -18,7 +18,18 @@ class RAQP:
 	def process(input_text):
 		rel_text, query_text = RAQP._split_input(input_text)
 		RAQP.relations = RAQP._parse_relations(rel_text)
+
+		# delete later
+		print("Parsed Relations:")
+		for rel in RAQP.relations.values():
+			print(f" - {rel.name}: columns={rel.columns}, rows={len(rel.rows)}")
+
 		result_rows, columns = RAQP._parse_and_execute_query(query_text)
+
+		print("Query Result Rows:")
+		for res in result_rows:
+			print(f" - {res}")
+
 		table = {"columns": columns, "rows": result_rows}
 		rel_name = RAQP._extract_relation_name(query_text)
 		explanation = RAQP._format_output_text(rel_name, columns, result_rows)
@@ -58,16 +69,19 @@ class RAQP:
 				else:
 					formatted.append(str(val))
 			lines.append('  ' + ', '.join(formatted))
-		result = f'{rel_name} = {{{header}\n' + '\n'.join(lines) + '\n}}'
+		result = f'{rel_name} = {{{header}\n' + '\n'.join(lines) + '\n}'
 		return result
 
 	@staticmethod
 	def _split_input(input_text):
 		parts = input_text.split('Query:')
 		rel_text = parts[0].strip()
-		query_text = parts[1].strip() if len(parts) > 1 else ''
+		query_text = parts[1].strip() if len(parts) > 1 else None
+		if not query_text:
+			raise ValueError("No query found in input.")
 
 		return rel_text, query_text
+
 	@staticmethod
 	def _parse_relations(rel_text):
 		relations = {}
@@ -221,3 +235,24 @@ class RAQP:
 	def _difference(left, right):
 		# Only supports relations with same columns
 		return [row for row in left.rows if row not in right.rows]
+
+if __name__ == "__main__":
+	sample_input = """
+Employees (EID, Name, Age) = {
+  E1, John, 32
+  E2, Alice, 28
+  E3, Bob, 29
+}
+
+Query: select Age > 30 (Employees)
+"""
+	expected = """
+Employees = {EID, Name, Age
+  "E1", "John", 32
+}
+"""
+	result = RAQP.process(sample_input)
+	print("=" * 10)
+	print("FINAL OUTPUT:")
+	print(result.text.strip())
+	assert result.text.strip() == expected.strip()

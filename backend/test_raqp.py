@@ -37,6 +37,7 @@ Employees = {Name, Age
 }
 """
     result = RAQP.process(input_text)
+    print(result.text.strip())
     assert result.text.strip() == expected.strip()
 
 def test_join():
@@ -63,6 +64,7 @@ Result = {EID, Name, Age, DID, DName
 }
 """
     result = RAQP.process(input_text)
+    print(result.text.strip())
     assert result.text.strip() == expected.strip()
 
 def test_union():
@@ -90,6 +92,7 @@ Result = {Name
 }
 """
     result = RAQP.process(input_text)
+    print(result.text.strip())
     assert result.text.strip() == expected.strip()
 
 def test_intersect():
@@ -116,6 +119,7 @@ Result = {Name
 }
 """
     result = RAQP.process(input_text)
+    print(result.text.strip())
     assert result.text.strip() == expected.strip()
 
 def test_diff():
@@ -142,6 +146,7 @@ Result = {Name
 }
 """
     result = RAQP.process(input_text)
+    print(result.text.strip())
     assert result.text.strip() == expected.strip()
 
 def test_nested_1():
@@ -181,6 +186,7 @@ project Name (
 )
 """
     result = RAQP.process(input_text)
+    print(result.text.strip())
     assert result.text.strip() == expected.strip()
 
 def test_nested_2():
@@ -229,6 +235,7 @@ Result = {Name
 }
 """
     result = RAQP.process(input_text)
+    print(result.text.strip())
     assert result.text.strip() == expected.strip()
 
 def test_no_result():
@@ -243,6 +250,7 @@ Query: select Age > 100 (Employees)
 """
     expected = "No result."
     result = RAQP.process(input_text)
+    print(result.text.strip())
     assert result.text.strip() == expected.strip()
 
 def test_empty_relations():
@@ -254,6 +262,7 @@ Query: select Age > 30 (Employees)
 """
     expected = "No result."
     result = RAQP.process(input_text)
+    print(result.text.strip())
     assert result.text.strip() == expected.strip()
 
 def test_invalid_query():
