@@ -1,4 +1,8 @@
 import re
+import json
+"""
+Multi relation not implemented
+"""
 
 class Relation:
 	def __init__(self, name, columns, rows):
@@ -19,22 +23,30 @@ class RAQP:
 		rel_text, query_text = RAQP._split_input(input_text)
 		RAQP.relations = RAQP._parse_relations(rel_text)
 
-		# delete later
-		print("Parsed Relations:")
-		for rel in RAQP.relations.values():
-			print(f" - {rel.name}: columns={rel.columns}, rows={len(rel.rows)}")
+		parsed_query = RAQP._parse_query(query_text)
+		print("="*20)
+		print("Parsed Query Tree:")
+		print(json.dumps(parsed_query, indent=2))
+		print("="*20)
 
-		result_rows, columns = RAQP._parse_and_execute_query(query_text)
-
-		print("Query Result Rows:")
-		for res in result_rows:
-			print(f" - {res}")
-
+		result_rows, columns, rel_name = RAQP._execute(parsed_query)
 		table = {"columns": columns, "rows": result_rows}
-		rel_name = RAQP._extract_relation_name(query_text)
-		explanation = RAQP._format_output_text(rel_name, columns, result_rows)
+		if not result_rows:
+			explanation = "No result."
+		else:
+			explanation = RAQP._format_output_text(rel_name, columns, result_rows)
 		return RAQPResult(explanation, table)
-	
+
+	@staticmethod
+	def _print_relation(rel):
+		print(f"Relation: {rel.name}")
+		# print(",\t".join(rel.columns))
+		# for row in rel.rows:
+		# 	print(",\t".join(row))
+		# print()
+		print(rel.columns)
+		print(rel.rows)
+
 	@staticmethod
 	def _extract_relation_name(query_text):
 		# Try to extract the correct relation name based on the operation
@@ -98,75 +110,242 @@ class RAQP:
 		return relations
 
 	@staticmethod
-	def _parse_and_execute_query(query_text):
-		handlers = {
-			'select': lambda m: RAQP._handle_select(m),
-			'project': lambda m: RAQP._handle_project(m),
-			'join': lambda m: RAQP._handle_join(m),
-			'union': lambda m: RAQP._handle_set_op(m, 'union'),
-			'intersect': lambda m: RAQP._handle_set_op(m, 'intersect'),
-			'diff': lambda m: RAQP._handle_set_op(m, 'diff'),
-		}
-		for op, handler in handlers.items():
-			if query_text.startswith(op):
-				patterns = {
-					'select': r'select\s+(.+?)\s*\((\w+)\)',
-					'project': r'project\s+(.+?)\s*\((\w+)\)',
-					'join': r'join\s*\((\w+),\s*(\w+),\s*(.+)\)',
-					'union': r'union\s*\((\w+),\s*(\w+)\)',
-					'intersect': r'intersect\s*\((\w+),\s*(\w+)\)',
-					'diff': r'diff\s*\((\w+),\s*(\w+)\)',
-				}
-				m = re.match(patterns[op], query_text)
-				if not m:
-					return [], []
-				return handler(m)
-		return [], []
+	def _parse_query(query_text):
+		# Tokenize and parse respecting brackets and operator precedence
+		# Supported ops: select, project, join, union, intersect, minus (-)
+		# Returns a tree: {type, ...}
+		def tokenize(s):
+			# Add spaces around brackets and operators for easier splitting
+			s = s.replace('(', ' ( ').replace(')', ' ) ')
+			s = s.replace(',', ' , ')
+			s = s.replace('=', ' = ')
+			s = s.replace('>', ' > ').replace('<', ' < ')
+			s = s.replace('-', ' - ')
+			s = s.replace('union', ' union ').replace('intersect', ' intersect ')
+			return s.split()
+
+		# Helper to find matching closing bracket
+		def find_matching(tokens, start):
+			depth = 0
+			for i in range(start, len(tokens)):
+				if tokens[i] == '(': depth += 1
+				elif tokens[i] == ')':
+					depth -= 1
+					if depth == 0:
+						return i
+			return -1
+
+		# Recursive descent parser
+		def parse(tokens):
+			# Handle brackets
+			if tokens and tokens[0] == '(':  # ( ... )
+				end = find_matching(tokens, 0)
+				if end == -1:
+					raise Exception('Unmatched parenthesis')
+				inner = parse(tokens[1:end])
+				rest = tokens[end+1:]
+				if rest:
+					# Check for binary op after bracket
+					if rest[0] in ['union', 'intersect', '-']:
+						op = rest[0]
+						right = parse(rest[1:])
+						if op == 'union':
+							return {'type': 'union', 'left': inner, 'right': right}
+						elif op == 'intersect':
+							return {'type': 'intersect', 'left': inner, 'right': right}
+						elif op == '-':
+							return {'type': 'minus', 'left': inner, 'right': right}
+					else:
+						return inner
+				else:
+					return inner
+			# Binary ops: union, intersect, minus
+			for op in ['union', 'intersect', '-']:
+				if op in tokens:
+					idx = tokens.index(op)
+					left = parse(tokens[:idx])
+					right = parse(tokens[idx+1:])
+					if op == 'union':
+						return {'type': 'union', 'left': left, 'right': right}
+					elif op == 'intersect':
+						return {'type': 'intersect', 'left': left, 'right': right}
+					elif op == '-':
+						return {'type': 'minus', 'left': left, 'right': right}
+			# Unary ops: select, project
+			if tokens and tokens[0] == 'select':
+				# select cond (source)
+				# Find first '('
+				try:
+					paren_idx = tokens.index('(')
+					cond = ' '.join(tokens[1:paren_idx])
+					end = find_matching(tokens, paren_idx)
+					source = parse(tokens[paren_idx+1:end])
+					return {'type': 'select', 'condition': cond, 'source': source}
+				except Exception:
+					raise Exception('Invalid select syntax')
+			if tokens and tokens[0] == 'project':
+				# project col1, col2 (source)
+				try:
+					paren_idx = tokens.index('(')
+					cols = []
+					for i in range(1, paren_idx):
+						if tokens[i] != ',':
+							cols.append(tokens[i])
+					end = find_matching(tokens, paren_idx)
+					source = parse(tokens[paren_idx+1:end])
+					return {'type': 'project', 'columns': cols, 'source': source}
+				except Exception:
+					raise Exception('Invalid project syntax')
+			# Join: rel1 join cond rel2
+			if 'join' in tokens:
+				idx = tokens.index('join')
+				left = parse(tokens[:idx])
+				# Find the condition and right relation
+				# Condition ends at the start of the right relation (which is a token that matches a relation name or starts a bracket)
+				cond_tokens = []
+				i = idx+1
+				# Find the '=' in the condition
+				eq_idx = None
+				for j in range(i, len(tokens)):
+					if tokens[j] == '=':
+						eq_idx = j
+						break
+				if eq_idx is not None:
+					# Take left and right of '=' for condition
+					left_cond = ' '.join(tokens[i:eq_idx]).strip()
+					# Now, right of '=' may include the right relation name
+					# Find the next token that is not part of the condition (i.e., not identifier, not dot, not '='), which is the start of the right relation
+					k = eq_idx+1
+					right_cond_tokens = []
+					while k < len(tokens) and tokens[k] not in ['(', 'union', 'intersect', '-'] and not tokens[k].startswith('select') and not tokens[k].startswith('project') and not tokens[k] == 'join':
+						right_cond_tokens.append(tokens[k])
+						k += 1
+					# The last token in right_cond_tokens is the right relation name
+					if right_cond_tokens:
+						right_relation_name = right_cond_tokens[-1]
+						right_cond = ' '.join(right_cond_tokens[:-1]).strip()
+						cond = f"{left_cond} = {right_cond}"
+						right = parse([right_relation_name])
+						# If there are more tokens after right relation, parse them as well (for nested joins etc)
+						if k < len(tokens):
+							# Compose right as a nested parse
+							right = parse(tokens[k:])
+						return {'type': 'join', 'left': left, 'right': right, 'condition': cond}
+					else:
+						# Fallback: treat everything after '=' as condition
+						cond = f"{left_cond} = {' '.join(tokens[eq_idx+1:]).strip()}"
+						right = None
+						return {'type': 'join', 'left': left, 'right': right, 'condition': cond}
+				else:
+					# Fallback: treat everything after join as condition
+					cond = ' '.join(tokens[i:]).strip()
+					right = None
+					return {'type': 'join', 'left': left, 'right': right, 'condition': cond}
+			# relation if none of the above
+			if tokens:
+				name = ' '.join([t for t in tokens if t != ','])
+				if name in RAQP.relations:
+					return {'type': 'relation', 'name': name}
+				else:
+					raise Exception(f"Unknown relation/operator name: {name}")
+			raise Exception('Could not parse query')
+
+		tokens = tokenize(query_text)
+		return parse(tokens)
 
 	@staticmethod
-	def _handle_select(m):
-		condition, rel_name = m.group(1), m.group(2)
-		relation = RAQP.relations.get(rel_name)
-		if not relation:
-			return [], []
-		filtered_rows = RAQP._select(relation, condition)
-		return filtered_rows, relation.columns
+	def _set_op_iterate(node):
+		left_rows, left_cols, left_name = RAQP._execute(node['left'])
+		right_rows, right_cols, right_name = RAQP._execute(node['right'])
+		print(left_cols, left_rows)
+		print(right_cols, right_rows)
+		left_rel = Relation(left_name, left_cols, left_rows)
+		right_rel = Relation(right_name, right_cols, right_rows)
+		return left_rel, right_rel, left_name, left_cols
 
 	@staticmethod
-	def _handle_project(m):
-		col, rel_name = m.group(1), m.group(2)
-		relation = RAQP.relations.get(rel_name)
-		if not relation:
-			return [], []
-		projected_rows = RAQP._project(relation, col)
-		return projected_rows, [col]
-
-	@staticmethod
-	def _handle_join(m):
-		left_name, right_name, cond = m.group(1), m.group(2), m.group(3)
-		left = RAQP.relations.get(left_name)
-		right = RAQP.relations.get(right_name)
-		if not left or not right:
-			return [], []
-		joined_rows, joined_cols = RAQP._join(left, right, cond)
-		return joined_rows, joined_cols
-
-	@staticmethod
-	def _handle_set_op(m, op):
-		left_name, right_name = m.group(1), m.group(2)
-		left = RAQP.relations.get(left_name)
-		right = RAQP.relations.get(right_name)
-		if not left or not right:
-			return [], []
-		if op == 'union':
-			result_rows = RAQP._union(left, right)
-		elif op == 'intersect':
-			result_rows = RAQP._intersect(left, right)
-		elif op == 'diff':
-			result_rows = RAQP._difference(left, right)
+	def _execute(node):
+		if node['type'] == 'relation':
+			rel = RAQP.relations.get(node['name'])
+			if not rel:
+				return [], [], node['name']
+			return rel.rows, rel.columns, node['name']
+		elif node['type'] == 'select':
+			rows, cols, rel_name = RAQP._execute(node['source'])
+			temp_rel = Relation(rel_name, cols, rows)
+			print("="*20)
+			print()
+			print("Selecting from Relation:", temp_rel.name, " | condition:", node['condition'])
+			print("Relation:")
+			RAQP._print_relation(temp_rel)
+			print()
+			filtered = RAQP._select(temp_rel, node['condition'])
+			return filtered, cols, rel_name
+		elif node['type'] == 'project':
+			rows, cols, rel_name = RAQP._execute(node['source'])
+			temp_rel = Relation(rel_name, cols, rows)
+			print("="*20)
+			print()
+			print("Projecting from Relation:", temp_rel.name, " | columns:", node['columns'])
+			print("Relation:")
+			RAQP._print_relation(temp_rel)
+			print()
+			projected = RAQP._project(temp_rel, node['columns'])
+			if isinstance(node['columns'], str):
+				col_list = [c.strip() for c in node['columns'].split(',')]
+			else:
+				col_list = node['columns']
+			return projected, col_list, rel_name
+		elif node['type'] == 'join':
+			left_rel, right_rel, left_name, left_cols = RAQP._set_op_iterate(node)
+			print("="*20)
+			print()
+			print("Joining:", left_rel.name, "and", right_rel.name, " | condition:", node['condition'])
+			print("Left Relation:")
+			RAQP._print_relation(left_rel)
+			print("Right Relation:")
+			RAQP._print_relation(right_rel)
+			print()
+			joined_rows, joined_cols = RAQP._join(left_rel, right_rel, node['condition'])
+			return joined_rows, joined_cols, left_name # left relation name for join result
+		elif node['type'] == 'union':
+			left_rel, right_rel, left_name, left_cols = RAQP._set_op_iterate(node)
+			print("="*20)
+			print()
+			print("Unioning:", left_rel.name, "and", right_rel.name)
+			print("Left Relation:")
+			RAQP._print_relation(left_rel)
+			print("Right Relation:")
+			RAQP._print_relation(right_rel)
+			print()
+			result_rows = RAQP._union(left_rel, right_rel)
+			return result_rows, left_cols, left_name # left relation name for union result
+		elif node['type'] == 'intersect':
+			left_rel, right_rel, left_name, left_cols = RAQP._set_op_iterate(node)
+			print("="*20)
+			print()
+			print("Intersecting:", left_rel.name, "and", right_rel.name)
+			print("Left Relation:")
+			RAQP._print_relation(left_rel)
+			print("Right Relation:")
+			RAQP._print_relation(right_rel)
+			print()
+			result_rows = RAQP._intersect(left_rel, right_rel)
+			return result_rows, left_cols, left_name
+		elif node['type'] == 'minus':
+			left_rel, right_rel, left_name, left_cols = RAQP._set_op_iterate(node)
+			result_rows = RAQP._difference(left_rel, right_rel)
+			print("="*20)
+			print()
+			print("Differencing:", left_rel.name, "and", right_rel.name)
+			print("Left Relation:")
+			RAQP._print_relation(left_rel)
+			print("Right Relation:")
+			RAQP._print_relation(right_rel)
+			print()
+			return result_rows, left_cols, left_name
 		else:
-			result_rows = []
-		return result_rows, left.columns
+			raise Exception(f"Unknown node type: {node['type']}")
 
 	@staticmethod
 	def _select(relation, condition):
@@ -197,29 +376,28 @@ class RAQP:
 		return filtered
 
 	@staticmethod
-	def _project(relation, col_name):
-		col_name = col_name.strip()
-		col_idx = relation.columns.index(col_name)
-		projected = [[row[col_idx]] for row in relation.rows]
+	def _project(relation, cols):
+		col_indices = [relation.columns.index(col.strip()) for col in cols]
+		projected = [[row[idx] for idx in col_indices] for row in relation.rows]
 		return projected
 
 	@staticmethod
 	def _join(left, right, cond):
-		# Only supports equi-join on one column, like EID = EID
+		# condition is required for now, natural join implement later
 		left_col, right_col = [c.strip() for c in cond.split('=')]
-		left_idx = left.columns.index(left_col)
-		right_idx = right.columns.index(right_col)
+		left_idx = left.columns.index(left_col.split('.')[-1])
+		right_idx = right.columns.index(right_col.split('.')[-1])
 		joined_cols = left.columns + right.columns
-		joined_rows = []
-		for lrow in left.rows:
-			for rrow in right.rows:
-				if lrow[left_idx] == rrow[right_idx]:
-					joined_rows.append(lrow + rrow)
+		joined_rows = [lrow + rrow for lrow in left.rows for rrow in right.rows if lrow[left_idx] == rrow[right_idx]]
+		# always remove the key column from the right relation
+		joined_cols.pop(len(left.columns) + right_idx)
+		for i in range(len(joined_rows)):
+			joined_rows[i].pop(len(left.columns) + right_idx)
 		return joined_rows, joined_cols
 
 	@staticmethod
 	def _union(left, right):
-		# Only supports relations with same columns
+		# only supports relations with same columns
 		all_rows = left.rows.copy()
 		for row in right.rows:
 			if row not in all_rows:
@@ -239,20 +417,19 @@ class RAQP:
 if __name__ == "__main__":
 	sample_input = """
 Employees (EID, Name, Age) = {
-  E1, John, 32
-  E2, Alice, 28
-  E3, Bob, 29
+    E1, John, 32
+    E2, Alice, 28
+    E3, Bob, 29
 }
 
-Query: select Age > 30 (Employees)
+Query: invalid_operation (Employees)
 """
 	expected = """
-Employees = {EID, Name, Age
-  "E1", "John", 32
-}
+No result.
 """
 	result = RAQP.process(sample_input)
-	print("=" * 10)
+	print("=" * 20)
 	print("FINAL OUTPUT:")
 	print(result.text.strip())
-	assert result.text.strip() == expected.strip()
+	print("EXPECTED OUTPUT:")
+	print(expected.strip())

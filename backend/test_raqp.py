@@ -57,7 +57,7 @@ Departments (DID, DName, EID) = {
 Query: Employees join Employees.EID = Departments.EID Departments
     """
     expected = """
-Result = {EID, Name, Age, DID, DName
+Employees = {EID, Name, Age, DID, DName
   "E1", "John", 32, "D2", "IT"
   "E2", "Alice", 28, "D1", "HR"
   "E3", "Bob", 29, "D3", "Finance"
@@ -84,7 +84,7 @@ Managers (MID, Name, Age) = {
 Query: (project Name (select Age > 30 (Employees))) union (project Name (Managers))
     """
     expected = """
-Result = {Name
+Employees = {Name
   "John"
   "Carol"
   "Alice"
@@ -113,7 +113,7 @@ Managers (MID, Name, Age) = {
 Query: (project Name (Employees)) intersect (project Name (Managers))
     """
     expected = """
-Result = {Name
+Employees = {Name
   "Alice"
   "Carol"
 }
@@ -140,7 +140,7 @@ Contractors (CID, Name) = {
 Query: (project Name (Employees)) - (project Name (Contractors))
     """
     expected = """
-Result = {Name
+Employees = {Name
   "John"
   "Alice"
 }
@@ -151,39 +151,31 @@ Result = {Name
 
 def test_nested_1():
     input_text = """
-Student = {
-  ID, Name, Age, Major
-  '1', 'Alice', '20', 'Computer Science'
-  '2', 'Bob', '22', 'Physics'
-  '3', 'Charlie', '21', 'Mathematics'
+Student (ID, Name, Age, Major) = {
+  1, Alice, 20, Computer Science
+  2, Bob, 22, Physics
+  3, Charlie, 21, Mathematics
 }
 
-Courses = {
-  CourseID, CourseName, Professor
-  'C101', 'Databases', 'Dr. Smith'
-  'C102', 'Physics', 'Dr. Doe'
-  'C103', 'Calculus', 'Dr. White'
+Courses (CourseID, CourseName, Professor) = {
+  C101, Databases, Smith
+  C102, Physics, Doe
+  C103, Calculus, White
 }
 
-Enrollment = {
-  StudentID, CourseID
-  '1', 'C101'
-  '2', 'C102'
-  '3', 'C103'
+Enrollment (StudentID, CourseID) = {
+  1, C101
+  2, C102
+  3, C103
 }
+
+Query: project Name ((Student join Student.ID = Enrollment.StudentID Enrollment) join Student.CourseID = Courses.CourseID Courses) - project Name (select Professor = Smith ((Student join Student.ID = Enrollment.StudentID Enrollment) join Student.CourseID = Courses.CourseID Courses))
 """
     expected = """
-project Name (
-   (Student join Student.ID = Enrollment.StudentID Enrollment)
-   join Enrollment.CourseID = Courses.CourseID Courses
-)
--
-project Name (
-   select Professor = 'Dr. Smith' (
-      (Student join Student.ID = Enrollment.StudentID Enrollment)
-      join Enrollment.CourseID = Courses.CourseID Courses
-   )
-)
+Student = {Name
+  "Bob"
+  "Charlie"
+}
 """
     result = RAQP.process(input_text)
     print(result.text.strip())
@@ -228,7 +220,7 @@ union
 )
 """
     expected = """
-Result = {Name
+Employees = {Name
   "John"
   "Carol"
   "Eve"
