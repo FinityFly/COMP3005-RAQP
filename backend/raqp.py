@@ -111,147 +111,128 @@ class RAQP:
 
 	@staticmethod
 	def _parse_query(query_text):
-		# Tokenize and parse respecting brackets and operator precedence
-		# Supported ops: select, project, join, union, intersect, minus (-)
-		# Returns a tree: {type, ...}
 		def tokenize(s):
-			# Add spaces around brackets and operators for easier splitting
+			# guaranteed clean splitting
 			s = s.replace('(', ' ( ').replace(')', ' ) ')
 			s = s.replace(',', ' , ')
-			s = s.replace('=', ' = ')
-			s = s.replace('>', ' > ').replace('<', ' < ')
+			s = s.replace('=', ' = ').replace('>', ' > ').replace('<', ' < ')
 			s = s.replace('-', ' - ')
 			s = s.replace('union', ' union ').replace('intersect', ' intersect ')
-			return s.split()
+			return [token for token in s.split() if token]
 
-		# Helper to find matching closing bracket
-		def find_matching(tokens, start):
-			depth = 0
-			for i in range(start, len(tokens)):
-				if tokens[i] == '(': depth += 1
+		def find_matching_paren(tokens, start_index):
+			if tokens[start_index] != '(':
+				return -1
+			depth = 1
+			for i in range(start_index + 1, len(tokens)):
+				if tokens[i] == '(':
+					depth += 1
 				elif tokens[i] == ')':
 					depth -= 1
 					if depth == 0:
 						return i
 			return -1
 
-		# Recursive descent parser
 		def parse(tokens):
-			# Handle brackets
-			if tokens and tokens[0] == '(':  # ( ... )
-				end = find_matching(tokens, 0)
-				if end == -1:
-					raise Exception('Unmatched parenthesis')
-				inner = parse(tokens[1:end])
-				rest = tokens[end+1:]
-				if rest:
-					# Check for binary op after bracket
-					if rest[0] in ['union', 'intersect', '-']:
-						op = rest[0]
-						right = parse(rest[1:])
-						if op == 'union':
-							return {'type': 'union', 'left': inner, 'right': right}
-						elif op == 'intersect':
-							return {'type': 'intersect', 'left': inner, 'right': right}
-						elif op == '-':
-							return {'type': 'minus', 'left': inner, 'right': right}
+			if not tokens:
+				raise ValueError("Cannot parse an empty query component.")
+			if tokens[0] == '(' and find_matching_paren(tokens, 0) == len(tokens) - 1:
+				return parse(tokens[1:-1])
+
+			# order of operators (lowest to highest)
+			# 1. set operations: minus, union, intersect
+			# 2. join
+			# 3. unary operations: select, project
+
+			# 1. set operators
+			depth = 0
+			for i in range(len(tokens) - 1, -1, -1):
+				token = tokens[i]
+				if token == ')':
+					depth += 1
+				elif token == '(':
+					depth -= 1
+				elif depth == 0 and token in ['-', 'union', 'intersect']:
+					op_type = {'-': 'minus', 'union': 'union', 'intersect': 'intersect'}[token]
+					return {
+						'type': op_type,
+						'left': parse(tokens[:i]),
+						'right': parse(tokens[i+1:])
+					}
+
+			# 2. join operator
+			depth = 0
+			for i in range(len(tokens) - 1, -1, -1):
+				token = tokens[i]
+				if token == ')':
+					depth += 1
+				elif token == '(':
+					depth -= 1
+				elif depth == 0 and token == 'join':
+					left_node = parse(tokens[:i])
+					rhs_tokens = tokens[i+1:]
+					if not rhs_tokens:
+						raise ValueError("Missing right operand for join.")
+					right_operand_tokens = []
+					condition_tokens = []
+					if rhs_tokens[-1] == ')':
+						# Subquery case: find its matching opening parenthesis
+						start_paren_idx = find_matching_paren(rhs_tokens, 0) if rhs_tokens[0] == '(' else -1 # A bit of a guess, need to be smarter
+						
+						local_depth = 1
+						start_paren_idx = -1
+						for j in range(len(rhs_tokens) - 2, -1, -1):
+							if rhs_tokens[j] == ')': local_depth +=1
+							elif rhs_tokens[j] == '(':
+								local_depth -= 1
+								if local_depth == 0:
+									start_paren_idx = j
+									break
+						if start_paren_idx == -1:
+							raise ValueError("Invalid join syntax: unmatched parenthesis in right operand.")
+						right_operand_tokens = rhs_tokens[start_paren_idx:]
+						condition_tokens = rhs_tokens[:start_paren_idx]
 					else:
-						return inner
-				else:
-					return inner
-			# Binary ops: union, intersect, minus
-			for op in ['union', 'intersect', '-']:
-				if op in tokens:
-					idx = tokens.index(op)
-					left = parse(tokens[:idx])
-					right = parse(tokens[idx+1:])
-					if op == 'union':
-						return {'type': 'union', 'left': left, 'right': right}
-					elif op == 'intersect':
-						return {'type': 'intersect', 'left': left, 'right': right}
-					elif op == '-':
-						return {'type': 'minus', 'left': left, 'right': right}
-			# Unary ops: select, project
-			if tokens and tokens[0] == 'select':
-				# select cond (source)
-				# Find first '('
-				try:
-					paren_idx = tokens.index('(')
-					cond = ' '.join(tokens[1:paren_idx])
-					end = find_matching(tokens, paren_idx)
-					source = parse(tokens[paren_idx+1:end])
-					return {'type': 'select', 'condition': cond, 'source': source}
-				except Exception:
-					raise Exception('Invalid select syntax')
-			if tokens and tokens[0] == 'project':
-				# project col1, col2 (source)
-				try:
-					paren_idx = tokens.index('(')
-					cols = []
-					for i in range(1, paren_idx):
-						if tokens[i] != ',':
-							cols.append(tokens[i])
-					end = find_matching(tokens, paren_idx)
-					source = parse(tokens[paren_idx+1:end])
-					return {'type': 'project', 'columns': cols, 'source': source}
-				except Exception:
-					raise Exception('Invalid project syntax')
-			# Join: rel1 join cond rel2
-			if 'join' in tokens:
-				idx = tokens.index('join')
-				left = parse(tokens[:idx])
-				# Find the condition and right relation
-				# Condition ends at the start of the right relation (which is a token that matches a relation name or starts a bracket)
-				cond_tokens = []
-				i = idx+1
-				# Find the '=' in the condition
-				eq_idx = None
-				for j in range(i, len(tokens)):
-					if tokens[j] == '=':
-						eq_idx = j
+						right_operand_tokens = [rhs_tokens[-1]]
+						condition_tokens = rhs_tokens[:-1]
+					if not condition_tokens:
+						raise ValueError("Join condition is missing.")
+					return {
+						'type': 'join',
+						'left': left_node,
+						'right': parse(right_operand_tokens),
+						'condition': ' '.join(condition_tokens)
+					}
+
+			# 3. unary operators
+			op = tokens[0]
+			if op in ['project', 'select']:
+				paren_start_idx = -1
+				for i, token in enumerate(tokens[1:], 1):
+					if token == '(':
+						paren_start_idx = i
 						break
-				if eq_idx is not None:
-					# Take left and right of '=' for condition
-					left_cond = ' '.join(tokens[i:eq_idx]).strip()
-					# Now, right of '=' may include the right relation name
-					# Find the next token that is not part of the condition (i.e., not identifier, not dot, not '='), which is the start of the right relation
-					k = eq_idx+1
-					right_cond_tokens = []
-					while k < len(tokens) and tokens[k] not in ['(', 'union', 'intersect', '-'] and not tokens[k].startswith('select') and not tokens[k].startswith('project') and not tokens[k] == 'join':
-						right_cond_tokens.append(tokens[k])
-						k += 1
-					# The last token in right_cond_tokens is the right relation name
-					if right_cond_tokens:
-						right_relation_name = right_cond_tokens[-1]
-						right_cond = ' '.join(right_cond_tokens[:-1]).strip()
-						cond = f"{left_cond} = {right_cond}"
-						right = parse([right_relation_name])
-						# If there are more tokens after right relation, parse them as well (for nested joins etc)
-						if k < len(tokens):
-							# Compose right as a nested parse
-							right = parse(tokens[k:])
-						return {'type': 'join', 'left': left, 'right': right, 'condition': cond}
-					else:
-						# Fallback: treat everything after '=' as condition
-						cond = f"{left_cond} = {' '.join(tokens[eq_idx+1:]).strip()}"
-						right = None
-						return {'type': 'join', 'left': left, 'right': right, 'condition': cond}
-				else:
-					# Fallback: treat everything after join as condition
-					cond = ' '.join(tokens[i:]).strip()
-					right = None
-					return {'type': 'join', 'left': left, 'right': right, 'condition': cond}
-			# relation if none of the above
-			if tokens:
-				name = ' '.join([t for t in tokens if t != ','])
+				if paren_start_idx == -1 or find_matching_paren(tokens, paren_start_idx) != len(tokens) - 1:
+					raise ValueError(f"Invalid syntax for {op}. Expected '... (source)'.")
+				spec_tokens = tokens[1:paren_start_idx]
+				source_tokens = tokens[paren_start_idx+1:-1]
+				if op == 'project':
+					columns = [t for t in spec_tokens if t != ',']
+					if not columns: raise ValueError("Project operation must specify columns.")
+					return { 'type': 'project', 'columns': columns, 'source': parse(source_tokens) }
+				else: # select
+					if not spec_tokens: raise ValueError("Select operation must have a condition.")
+					return { 'type': 'select', 'condition': ' '.join(spec_tokens), 'source': parse(source_tokens) }
+
+			# base case: single relation
+			if len(tokens) == 1:
+				name = tokens[0]
 				if name in RAQP.relations:
 					return {'type': 'relation', 'name': name}
-				else:
-					raise Exception(f"Unknown relation/operator name: {name}")
-			raise Exception('Could not parse query')
 
-		tokens = tokenize(query_text)
-		return parse(tokens)
+			raise ValueError(f"Unable to parse syntax: {' '.join(tokens)}")
+
+		return parse(tokenize(query_text))
 
 	@staticmethod
 	def _set_op_iterate(node):
