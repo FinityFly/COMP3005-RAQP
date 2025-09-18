@@ -1,8 +1,5 @@
 import re
 import json
-"""
-Multi relation not implemented
-"""
 
 class Relation:
 	def __init__(self, name, columns, rows):
@@ -40,32 +37,8 @@ class RAQP:
 	@staticmethod
 	def _print_relation(rel):
 		print(f"Relation: {rel.name}")
-		# print(",\t".join(rel.columns))
-		# for row in rel.rows:
-		# 	print(",\t".join(row))
-		# print()
 		print(rel.columns)
 		print(rel.rows)
-
-	@staticmethod
-	def _extract_relation_name(query_text):
-		# Try to extract the correct relation name based on the operation
-		# Handles select, project, join, union, intersect, diff
-		if query_text.startswith('select') or query_text.startswith('project'):
-			m = re.match(r'.*\((\w+)\)', query_text)
-			if m:
-				return m.group(1)
-		elif query_text.startswith('join'):
-			m = re.match(r'join\s*\((\w+),\s*(\w+),', query_text)
-			if m:
-				# Use left relation for join result name
-				return m.group(1)
-		elif query_text.startswith('union') or query_text.startswith('intersect') or query_text.startswith('diff'):
-			m = re.match(r'.*\((\w+),\s*(\w+)\)', query_text)
-			if m:
-				# Use left relation for set operation result name
-				return m.group(1)
-		return "Result"
 
 	@staticmethod
 	def _format_output_text(rel_name, columns, rows):
@@ -176,8 +149,8 @@ class RAQP:
 					right_operand_tokens = []
 					condition_tokens = []
 					if rhs_tokens[-1] == ')':
-						# Subquery case: find its matching opening parenthesis
-						start_paren_idx = find_matching_paren(rhs_tokens, 0) if rhs_tokens[0] == '(' else -1 # A bit of a guess, need to be smarter
+						# find its matching opening parenthesis
+						start_paren_idx = find_matching_paren(rhs_tokens, 0) if rhs_tokens[0] == '(' else -1 # a bit of a guess not going to lie, need to be smarter
 						
 						local_depth = 1
 						start_paren_idx = -1
@@ -244,6 +217,7 @@ class RAQP:
 		right_rel = Relation(right_name, right_cols, right_rows)
 		return left_rel, right_rel, left_name, left_cols
 
+	# REMOVE LOG LINES LATER IF NEEDED
 	@staticmethod
 	def _execute(node):
 		if node['type'] == 'relation':
@@ -330,8 +304,6 @@ class RAQP:
 
 	@staticmethod
 	def _select(relation, condition):
-		# Only supports simple conditions like Age > 30
-		# If you want more, you'll have to add it!
 		col_name, op, value = re.split(r'\s*(>|<|=)\s*', condition)
 		col_name = col_name.strip()
 		op = condition[len(col_name):].strip()[0]
@@ -378,7 +350,6 @@ class RAQP:
 
 	@staticmethod
 	def _union(left, right):
-		# only supports relations with same columns
 		all_rows = left.rows.copy()
 		for row in right.rows:
 			if row not in all_rows:
@@ -387,12 +358,10 @@ class RAQP:
 
 	@staticmethod
 	def _intersect(left, right):
-		# Only supports relations with same columns
 		return [row for row in left.rows if row in right.rows]
 
 	@staticmethod
 	def _difference(left, right):
-		# Only supports relations with same columns
 		return [row for row in left.rows if row not in right.rows]
 
 if __name__ == "__main__":
